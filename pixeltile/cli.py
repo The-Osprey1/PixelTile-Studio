@@ -18,7 +18,8 @@ def parse_args(argv=None) -> argparse.Namespace:
                    help="filament slots per tile incl. 1 backing slot (default 8 = H3C; use 4 for a standard AMS)")
     p.add_argument("--max-tile-size", type=float, default=200.0,
                    help=f"max tile edge in mm (default 200, up to {MAX_TILE_LIMIT_MM:g})")
-    p.add_argument("--palette", help="custom palette: 'hex,hex,Spool Name' list or a file path (default: built-in Bambu PLA)")
+    p.add_argument("--palette", help="custom palette: 'hex,hex,Spool Name,Spool Name=#hex' list or a file path "
+                                     "(default: built-in Bambu PLA; 'Name=#hex' corrects a spool's color)")
     p.add_argument("--colors", type=int, default=16, help="auto-pick N colors from the image (CIELAB k-means); 0 = use full palette")
     p.add_argument("--backing-color", default="Black", help="backing filament (Bambu name or hex)")
     p.add_argument("--color-depth", type=float, default=1.2)
@@ -66,9 +67,9 @@ def main(argv=None) -> int:
     for n, b in r.tiles.items():
         with open(os.path.join(a.out, "tiles", n), "wb") as f:
             f.write(b)
-    if r.swatch_3mf:
-        with open(os.path.join(a.out, "swatch.3mf"), "wb") as f:
-            f.write(r.swatch_3mf)
+    for n, b in r.swatches.items():
+        with open(os.path.join(a.out, n), "wb") as f:
+            f.write(b)
     if r.connectors_3mf:
         with open(os.path.join(a.out, "connectors.3mf"), "wb") as f:
             f.write(r.connectors_3mf)
@@ -78,6 +79,8 @@ def main(argv=None) -> int:
     with open(os.path.join(a.out, "README.txt"), "w", encoding="utf-8") as f:
         f.write(r.readme)
     print(r.readme)
+    for w in r.warnings:
+        print(f"warning: {w}", file=sys.stderr)
     print(f"Wrote {len(r.tiles)} tile(s) to {os.path.abspath(a.out)}")
     return 0
 

@@ -1,5 +1,7 @@
-pillow
-numpy
-pytest
-pywebview
-pyinstaller
+# Everything needed to run the CLI, web studio and desktop app, build the .exe, and run tests.
+# For just the converter: pip install .   (see pyproject.toml for the optional extras)
+numpy>=1.24
+pillow>=9.1
+pywebview>=4.0
+pyinstaller>=6.0
+pytest>=8.0

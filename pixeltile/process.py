@@ -53,26 +53,49 @@ def resize(img: Image.Image, cols: int, rows: int) -> np.ndarray:
 def quantize(rgb: np.ndarray, pal_rgb: np.ndarray, dither: bool = False) -> np.ndarray:
     """Map pixels to nearest palette index (CIELAB). Optional Floyd-Steinberg dithering."""
     pal_lab = rgb_to_lab(pal_rgb)
-    lab = rgb_to_lab(rgb)
-    if not dither:
-        return nearest(lab, pal_lab)
+    if dither:
+        return _floyd_steinberg(rgb_to_lab(rgb), pal_lab)
+    rgb = np.asarray(rgb)
+    if rgb.dtype != np.uint8:
+        return nearest(rgb_to_lab(rgb), pal_lab)
+    # Match each distinct color once: artwork repeats colors heavily, photos still repeat some.
+    flat = rgb.reshape(-1, 3).astype(np.int32)
+    uniq, inv = np.unique((flat[:, 0] << 16) | (flat[:, 1] << 8) | flat[:, 2], return_inverse=True)
+    urgb = np.stack([(uniq >> 16) & 255, (uniq >> 8) & 255, uniq & 255], axis=-1)
+    return nearest(rgb_to_lab(urgb), pal_lab)[inv.ravel()].reshape(rgb.shape[:-1])
+
+
+def _floyd_steinberg(lab: np.ndarray, pal_lab: np.ndarray) -> np.ndarray:
+    """Floyd-Steinberg error diffusion, processed along anti-diagonal wavefronts.
+
+    Pixel (y, x) only receives error from (y, x-1) and (y-1, x-1..x+1), all of which lie on
+    earlier wavefronts x + 2y = t. Every pixel on one wavefront can therefore be handled in a
+    single vectorized step. Error is added in the same order as a row-by-row scan, so the
+    result is identical to the classic sequential algorithm, just much faster.
+    """
     h, w, _ = lab.shape
-    work = lab.copy()
+    work = np.array(lab, dtype=np.float64, copy=True)
     out = np.zeros((h, w), dtype=np.int32)
-    for y in range(h):
-        for x in range(w):
-            old = work[y, x]
-            k = int(((pal_lab - old) ** 2).sum(1).argmin())
-            out[y, x] = k
-            err = old - pal_lab[k]
-            if x + 1 < w:
-                work[y, x + 1] += err * 7 / 16
-            if y + 1 < h:
-                if x > 0:
-                    work[y + 1, x - 1] += err * 3 / 16
-                work[y + 1, x] += err * 5 / 16
-                if x + 1 < w:
-                    work[y + 1, x + 1] += err * 1 / 16
+    for t in range(w + 2 * (h - 1)):
+        y0 = max(0, -((w - 1 - t) // 2))  # ceil((t - w + 1) / 2), clamped at 0
+        y1 = min(h - 1, t // 2)
+        if y0 > y1:
+            continue
+        ys = np.arange(y0, y1 + 1)
+        xs = t - 2 * ys
+        old = work[ys, xs]
+        k = ((old[:, None, :] - pal_lab[None, :, :]) ** 2).sum(-1).argmin(1)
+        out[ys, xs] = k
+        err = old - pal_lab[k]
+        down = ys + 1 < h
+        # down-left must land before right: in a row scan, (y-1, x+1) is visited before (y, x-1)
+        m = down & (xs > 0)
+        work[ys[m] + 1, xs[m] - 1] += err[m] * 3 / 16
+        m = xs + 1 < w
+        work[ys[m], xs[m] + 1] += err[m] * 7 / 16
+        work[ys[down] + 1, xs[down]] += err[down] * 5 / 16
+        m = down & (xs + 1 < w)
+        work[ys[m] + 1, xs[m] + 1] += err[m] * 1 / 16
     return out
 
 

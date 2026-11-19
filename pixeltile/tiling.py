@@ -13,6 +13,12 @@ class Tile:
     col: int
     idx: np.ndarray    # (rows, cols) palette indices after color limiting
     slot_map: dict[int, int] = field(default_factory=dict)  # palette cid -> 1-based extruder slot (2..)
+    recolored: int = 0  # pixels whose color was replaced to fit the per-tile slot limit
+    dropped: list[int] = field(default_factory=list)  # palette cids removed from this tile
+
+    @property
+    def recolored_frac(self) -> float:
+        return self.recolored / self.idx.size if self.idx.size else 0.0
 
 
 def tile_name(row: int, col: int) -> str:
@@ -52,7 +58,11 @@ def split_tiles(idx: np.ndarray, tiles_x: int, tiles_y: int, pal_lab: np.ndarray
     for r in range(tiles_y):
         for c in range(tiles_x):
             sub = idx[r * th:(r + 1) * th, c * tw:(c + 1) * tw]
-            tiles.append(Tile(tile_name(r, c), r, c, limit_colors(sub, pal_lab, max_colors)))
+            limited = limit_colors(sub, pal_lab, max_colors)
+            changed = sub != limited
+            dropped = sorted(set(np.unique(sub).tolist()) - set(np.unique(limited).tolist()))
+            tiles.append(Tile(tile_name(r, c), r, c, limited, recolored=int(changed.sum()),
+                              dropped=dropped))
     return tiles
 
 

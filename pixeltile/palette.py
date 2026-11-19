@@ -25,12 +25,13 @@ BAMBU_PLA: list[tuple[str, str]] = [
     ("Blue Gray", "#5B6579"), ("Purple", "#5E43B7"), ("Indigo Purple", "#482960"),
     ("Lavender", "#B8ACD6"), ("Lilac Purple", "#AE96D4"), ("Sakura Pink", "#E8AFCF"),
     ("Cream", "#F0E3C8"), ("Terracotta", "#B15533"), ("Ash Gray", "#9B9EA0"),
-    ("Charcoal", "#000000"), ("Apple Green", "#C6E188"), ("Caramel", "#AE835B"),
+    ("Charcoal", "#1C1C1C"), ("Apple Green", "#C6E188"), ("Caramel", "#AE835B"),
 ]
-# Charcoal duplicated black above on purpose is avoided: nudge to stay distinct.
-BAMBU_PLA[-3] = ("Charcoal", "#1C1C1C")
 
 _HEX = re.compile(r"^#?([0-9a-fA-F]{6})$")
+# Spool names may carry a corrected color: "Red=#B02A1C" (e.g. measured from a printed swatch).
+_NAME_OK = re.compile(r"^[^\x00-\x1f<>\"&=,]{1,48}$")
+_NEAREST_CHUNK = 32768  # pixels per block in nearest(); bounds temporary memory to ~40 MB
 
 
 def hex_to_rgb(h: str) -> tuple[int, int, int]:
@@ -63,16 +64,40 @@ def palette_labs(entries: list[tuple[str, str]]) -> np.ndarray:
 
 
 def nearest(lab: np.ndarray, pal_lab: np.ndarray) -> np.ndarray:
-    """Index of the closest palette color for each Lab pixel (shape (...,3))."""
+    """Index of the closest palette color for each Lab pixel (shape (...,3)).
+
+    Works in blocks so a large mural never builds a pixels x colors x 3 array all at once."""
     flat = lab.reshape(-1, 3)
-    d = ((flat[:, None, :] - pal_lab[None, :, :]) ** 2).sum(-1)
-    return d.argmin(1).reshape(lab.shape[:-1])
+    out = np.empty(len(flat), dtype=np.int64)
+    for i in range(0, len(flat), _NEAREST_CHUNK):
+        block = flat[i:i + _NEAREST_CHUNK]
+        out[i:i + len(block)] = ((block[:, None, :] - pal_lab[None, :, :]) ** 2).sum(-1).argmin(1)
+    return out.reshape(lab.shape[:-1])
+
+
+def parse_spool(token: str) -> tuple[str, str]:
+    """Resolve one palette token: '#hex', a built-in spool name, or 'Name=#hex' (color override)."""
+    t = token.strip()
+    if "=" in t:
+        name, hx = (x.strip() for x in t.split("=", 1))
+        if not _NAME_OK.match(name):
+            raise ValueError(f"Bad spool name: {name!r}")
+        known = {n.lower(): n for n, _ in BAMBU_PLA}
+        return known.get(name.lower(), name), rgb_to_hex(hex_to_rgb(hx))
+    if _HEX.match(t):
+        h = rgb_to_hex(hex_to_rgb(t))
+        return h, h
+    for n, h in BAMBU_PLA:
+        if n.lower() == t.lower():
+            return n, h
+    raise ValueError(f"Unknown palette entry: {token!r}")
 
 
 def parse_palette(spec: str | None, allow_file: bool = True) -> list[tuple[str, str]]:
     """Custom palette: comma-separated hex/names or a file (one hex or 'Name,#hex' per line).
 
-    Names are matched against the built-in Bambu list ("owned spools")."""
+    Names are matched against the built-in Bambu list ("owned spools"); 'Name=#hex' keeps the
+    name but uses a corrected color."""
     if not spec:
         return list(BAMBU_PLA)
     if allow_file and os.path.isfile(spec):
@@ -87,18 +112,12 @@ def parse_palette(spec: str | None, allow_file: bool = True) -> list[tuple[str, 
                 items.append(t)
     else:
         items = [t.strip() for t in spec.split(",") if t.strip()]
-    by_name = {n.lower(): (n, h) for n, h in BAMBU_PLA}
     out: list[tuple[str, str]] = []
     for it in items:
         if isinstance(it, tuple):
             out.append((it[0], rgb_to_hex(hex_to_rgb(it[1]))))
-        elif _HEX.match(it):
-            h = rgb_to_hex(hex_to_rgb(it))
-            out.append((h, h))
-        elif it.lower() in by_name:
-            out.append(by_name[it.lower()])
         else:
-            raise ValueError(f"Unknown palette entry: {it!r}")
+            out.append(parse_spool(it))
     if not out:
         raise ValueError("Palette is empty")
     return out
@@ -107,12 +126,15 @@ def parse_palette(spec: str | None, allow_file: bool = True) -> list[tuple[str, 
 def auto_pick(rgb: np.ndarray, n: int, palette: list[tuple[str, str]], seed: int = 0,
               iters: int = 20) -> list[tuple[str, str]]:
     """k-means in CIELAB over the image, each center snapped to the nearest palette color."""
+    if n < 1:
+        raise ValueError("auto color count must be >= 1")
     pal_lab = palette_labs(palette)
     n = min(n, len(palette))
-    lab = rgb_to_lab(rgb.reshape(-1, 3))
+    flat = rgb.reshape(-1, 3)
     rng = np.random.default_rng(seed)
-    if len(lab) > 20000:
-        lab = lab[rng.choice(len(lab), 20000, replace=False)]
+    if len(flat) > 20000:  # sample first, then convert only the sampled pixels
+        flat = flat[rng.choice(len(flat), 20000, replace=False)]
+    lab = rgb_to_lab(flat)
     # k-means++ init
     centers = [lab[rng.integers(len(lab))]]
     for _ in range(1, n):

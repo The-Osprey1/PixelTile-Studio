@@ -2,6 +2,7 @@
 from PyInstaller.utils.hooks import collect_all
 
 datas, binaries, hiddenimports = collect_all('webview')
+datas += [('pixeltile/static', 'pixeltile/static')]  # studio HTML / CSS / JavaScript
 hiddenimports += ['PIL._tkinter_finder']
 
 a = Analysis(

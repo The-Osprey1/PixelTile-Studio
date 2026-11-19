@@ -12,6 +12,7 @@ try {
             --name PixelTileStudio `
             --icon assets/pixeltile.ico `
             --collect-all webview `
+            --add-data "pixeltile/static;pixeltile/static" `
             --hidden-import PIL._tkinter_finder `
             launcher.py
         Write-Host "`nBuilt single-file EXE: $(Resolve-Path dist\PixelTileStudio.exe)"
