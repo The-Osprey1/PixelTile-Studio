@@ -213,6 +213,11 @@
     padding: 4px 9px; border-radius: 5px; cursor: pointer; font-size: 11px; font-weight: 600;
   }
   .btn-table:hover { border-color: var(--bambu-green); color: var(--bambu-green); }
+  .btn-table + .btn-table { margin-left: 4px; }
+  .btn-bambu { border-color: rgba(0,174,66,0.45); color: var(--bambu-green); }
+  .span2 { grid-column: 1 / -1; }
+  .export-cell { white-space: nowrap; }
+  .field-hint { display: block; margin-top: 3px; font-size: 11px; color: var(--text-muted); font-weight: 400; }
 
   /* SPOOLS MODAL */
   dialog {

@@ -83,12 +83,9 @@ def test_3mf_structure_and_manifold_boxes():
     idx = np.array([[0, 0, 1], [0, 2, 1]])
     pal = [("A", "#FF0000"), ("B", "#00FF00"), ("C", "#0000FF")]
     parts = tile_parts(idx, pal, 2.0, 1.2, 1.6, ("Black", "#000000"))
-    slots = ["#000000", "#FF0000", "#00FF00", "#0000FF"] + ["#FFFFFF"] * 4
-    z, root = _open(write_3mf(parts, "t", slots))
-    assert set(z.namelist()) >= {"[Content_Types].xml", "_rels/.rels", "3D/3dmodel.model",
-                                 "Metadata/model_settings.config", "Metadata/project_settings.config"}
-    proj = json.loads(z.read("Metadata/project_settings.config"))
-    assert len(proj["filament_colour"]) == 8 and len(proj["filament_type"]) == 8
+    z, root = _open(write_3mf(parts, "t", 8))
+    assert set(z.namelist()) == {"[Content_Types].xml", "_rels/.rels", "3D/3dmodel.model",
+                                 "Metadata/model_settings.config"}
     ms = ET.fromstring(z.read("Metadata/model_settings.config"))
     ext = sorted(int(m.get("value")) for m in ms.iter("metadata") if m.get("key") == "extruder"
                  and m.get("value") != "1" or False)
@@ -118,7 +115,7 @@ def test_3mf_volume_matches_pixels():
 
 def test_extruder_range_enforced():
     with pytest.raises(ValueError):
-        write_3mf([Part("x", "#FFFFFF", 9, [(0, 0, 0, 1, 1, 1)])], "t", ["#FFFFFF"] * 8)
+        write_3mf([Part("x", "#FFFFFF", 9, [(0, 0, 0, 1, 1, 1)])], "t", 8)
 
 
 def test_pipeline_multi_tile_default_h3c():
@@ -138,9 +135,9 @@ def test_pipeline_four_slot_ams():
     r = run(sample_png(), Settings(width_mm=60, max_tile_colors=4, auto_colors=10))
     for b in r.tiles.values():
         z, _ = _open(b)
-        assert len(json.loads(z.read("Metadata/project_settings.config"))["filament_colour"]) == 4
         ms = ET.fromstring(z.read("Metadata/model_settings.config"))
         assert len(list(ms.iter("part"))) <= 4
+        assert max(int(p.find("metadata[@key='extruder']").get("value")) for p in ms.iter("part")) <= 4
 
 
 def test_validation():

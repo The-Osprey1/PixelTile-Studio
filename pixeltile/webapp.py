@@ -14,6 +14,7 @@ from pathlib import Path
 
 from PIL import Image, UnidentifiedImageError
 
+from .bambu_studio import find_bambu_studio, open_in_bambu_studio
 from .palette import BAMBU_PLA
 from .pipeline import Result, Settings, run, sample_artwork_png
 
@@ -133,6 +134,17 @@ def save_prefs(data: dict) -> None:
         os.replace(tmp, path)
 
 
+def bambu_files_dir() -> Path:
+    """Where tiles are written before opening them in Bambu Studio (next to the saved preferences)."""
+    return prefs_path().parent / "Open in Bambu Studio"
+
+
+def _bambu_launcher(configured):
+    if not isinstance(configured, str):
+        configured = load_prefs().get("bambu_studio_path")
+    return find_bambu_studio(configured if isinstance(configured, str) else None)
+
+
 def _index_html() -> bytes:
     config = {"fields": list(_FIELDS), "spool_count": len(BAMBU_PLA)}
     page = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
@@ -188,6 +200,10 @@ class Handler(BaseHTTPRequestHandler):
             self._json([{"name": n, "hex": h} for n, h in BAMBU_PLA])
         elif u.path == "/api/prefs":
             self._json(load_prefs())
+        elif u.path == "/api/bambu":
+            q = urllib.parse.parse_qs(u.query)
+            launcher = _bambu_launcher(q["path"][0] if "path" in q else None)
+            self._json({"found": launcher is not None, "label": launcher.label if launcher else ""})
         elif u.path == "/api/sample":
             q = urllib.parse.parse_qs(u.query)
             name = q.get("name", ["wave"])[0]
@@ -227,7 +243,7 @@ class Handler(BaseHTTPRequestHandler):
             save_prefs(data)
             self._json({"saved": True})
             return
-        if u.path not in ("/api/inspect", "/api/preview", "/api/export", "/api/file"):
+        if u.path not in ("/api/inspect", "/api/preview", "/api/export", "/api/file", "/api/open_in_bambu"):
             self._text(404, "not found")
             return
         if not body:
@@ -243,6 +259,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, r.tile_map_png, "image/png")
             elif u.path == "/api/export":
                 self._send(200, _full_result(body, s).zip_bytes(), "application/zip")
+            elif u.path == "/api/open_in_bambu":
+                self._open_in_bambu(body, s, urllib.parse.parse_qs(u.query))
             else:
                 self._file(body, s, urllib.parse.parse_qs(u.query))
         except (ValueError, UnidentifiedImageError, Image.DecompressionBombError) as e:
@@ -266,19 +284,43 @@ class Handler(BaseHTTPRequestHandler):
             "tile_map_b64": _b64_png(r.tile_map_png),
         })
 
+    @staticmethod
+    def _lookup(r: Result, target: str) -> bytes:
+        if target in r.swatches:
+            return r.swatches[target]
+        if target == "connectors.3mf":
+            return r.connectors_3mf
+        return r.tiles.get(target, b"")
+
     def _file(self, body: bytes, s: Settings, q: dict) -> None:
         target = os.path.basename(q.get("file", [""])[0])
-        r = _full_result(body, s)
-        if target in r.swatches:
-            data = r.swatches[target]
-        elif target == "connectors.3mf":
-            data = r.connectors_3mf
-        else:
-            data = r.tiles.get(target, b"")
+        data = self._lookup(_full_result(body, s), target)
         if not data:
             self._text(404, "file not found")
             return
         self._send(200, data, "model/3mf", {"Content-Disposition": f'attachment; filename="{target}"'})
+
+    def _open_in_bambu(self, body: bytes, s: Settings, q: dict) -> None:
+        launcher = _bambu_launcher(q["bambu_path"][0] if "bambu_path" in q else None)
+        if launcher is None:
+            self._text(404, "Bambu Studio was not found. Set its location under "
+                            "Advanced Slicer & Geometry Tuning.")
+            return
+        target = os.path.basename(q.get("file", [""])[0])
+        data = self._lookup(_full_result(body, s), target)
+        if not data:
+            self._text(404, "file not found")
+            return
+        out = bambu_files_dir()
+        out.mkdir(parents=True, exist_ok=True)
+        path = out / target
+        path.write_bytes(data)
+        try:
+            open_in_bambu_studio(launcher, [path])
+        except OSError as e:
+            self._text(500, f"Could not start Bambu Studio ({launcher.label}): {e}")
+            return
+        self._json({"opened": True, "file": str(path), "program": launcher.label})
 
     def log_message(self, *a):
         pass

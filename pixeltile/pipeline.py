@@ -263,10 +263,15 @@ def run(src, s: Settings, allow_palette_file: bool = True, build_files: bool = T
         f"Pixel {s.pixel_mm:g} mm, color layer {s.color_depth_mm:g} mm, backing {s.backing_mm:g} mm",
         f"Printed FACE DOWN. Filament slot 1 = backing ({backing[0]}).",
         "",
+        "In Bambu Studio: each tile opens with your own printer and filament presets, and every part is",
+        "already assigned to its filament slot (T1, T2, ... below). Set each slot's filament color to match",
+        "the list, or sync your AMS, before slicing.",
+        f"Slice with a {s.layer_height:g} mm layer height and a {s.layer_height:g} mm first layer: "
+        f"{round(s.color_depth_mm / s.layer_height)} color layers + {round(s.backing_mm / s.layer_height)} backing layers.",
+        "",
         "Optimized Print Queue & Spool Swap Schedule:",
     ]
     full_idx = np.zeros_like(idx)
-    active_slot_hex = [backing[1]] + ["#FFFFFF"] * budget
     loaded_cid: dict[int, int] = {}
     total_w = cols * s.pixel_mm
     if not wall:
@@ -299,13 +304,9 @@ def run(src, s: Settings, allow_palette_file: bool = True, build_files: bool = T
             if step > 0 and loaded_cid.get(slot) != cid:
                 swaps += 1
             loaded_cid[slot] = cid
-        for p in parts:
-            active_slot_hex[p.extruder - 1] = p.hex
 
         if build_files:
-            res.tiles[f"{t.name}.3mf"] = write_3mf(
-                parts, f"PixelTile {t.name}", list(active_slot_hex), s.layer_height, s.nozzle
-            )
+            res.tiles[f"{t.name}.3mf"] = write_3mf(parts, f"PixelTile {t.name}", s.max_tile_colors)
         slots = []
         for p in parts:
             g = _grams(p.volume_mm3)
@@ -351,7 +352,7 @@ def run(src, s: Settings, allow_palette_file: bool = True, build_files: bool = T
         )
         res.swatch_names.append(name)
         if build_files:
-            res.swatches[name] = write_3mf(sw_parts, "PixelTile Swatch", sw_slots, s.layer_height, s.nozzle)
+            res.swatches[name] = write_3mf(sw_parts, "PixelTile Swatch", len(sw_slots))
         lines.append(f"  {name}: " + ", ".join(f"T{p.extruder}={p.name}" for p in sw_parts[1:]))
 
     if use_connectors:
@@ -361,10 +362,7 @@ def run(src, s: Settings, allow_palette_file: bool = True, build_files: bool = T
         res.has_connectors = True
         if build_files:
             conn_parts = connector_key_parts(n_edges + 2, backing, thickness_mm=key_t)
-            conn_slots = [backing[1]] + ["#FFFFFF"] * budget
-            res.connectors_3mf = write_3mf(
-                conn_parts, "PixelTile Connector Keys", conn_slots, s.layer_height, s.nozzle
-            )
+            res.connectors_3mf = write_3mf(conn_parts, "PixelTile Connector Keys", s.max_tile_colors)
         lines.append("")
         lines.append(f"Connector keys: {n_edges + 2} keys exported to connectors.3mf ({n_edges} seams + 2 spares).")
         if wall:
