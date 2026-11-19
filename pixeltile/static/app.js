@@ -11,6 +11,7 @@ let inspectSeq = 0;        // only the newest preview request may update the scr
 let inspectCtl = null;
 let prefsTimer = null;
 let prefsLoaded = false;
+let bambu = { found: false, label: '' };  // Bambu Studio on this computer, if any
 
 // Settings remembered between launches (saved by the local server, see /api/prefs).
 const PREF_FIELDS = ['width_mm', 'pixel_mm', 'max_tile_size_mm', 'max_tile_colors', 'auto_colors',
@@ -50,6 +51,7 @@ function applyPrefs(p) {
     }
   }
   if (typeof p.custom_palette === 'string') custom_pal.value = p.custom_palette;
+  if (typeof p.bambu_studio_path === 'string') bambu_path.value = p.bambu_studio_path;
   const f = (p.fields && typeof p.fields === 'object') ? p.fields : {};
   for (const id of PREF_FIELDS) if (id in f) document.getElementById(id).value = f[id];
   for (const id of PREF_CHECKS) if (id in f) document.getElementById(id).checked = !!f[id];
@@ -65,7 +67,7 @@ function savePrefs() {
     for (const id of PREF_CHECKS) fields[id] = document.getElementById(id).checked;
     const body = JSON.stringify({
       version: 1, spools: Array.from(activeSpools), overrides: colorOverrides,
-      custom_palette: custom_pal.value, fields,
+      custom_palette: custom_pal.value, bambu_studio_path: bambu_path.value.trim(), fields,
     });
     fetch('/api/prefs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body }).catch(() => {});
   }, 400);
@@ -88,6 +90,7 @@ async function init() {
     applyPrefs(await (await fetch('/api/prefs')).json());
   } catch (e) { /* first launch or unreadable preferences: keep the defaults */ }
   prefsLoaded = true;
+  await checkBambu();
   renderSpools();
 }
 
@@ -353,8 +356,18 @@ async function runInspect() {
     b.textContent = `⬇ ${name}`;
     b.onclick = () => downloadFile(name);
     swatch_btns.appendChild(b);
+    if (bambu.found) {
+      const o = document.createElement('button');
+      o.type = 'button';
+      o.className = 'btn-table btn-bambu';
+      o.title = `Open ${name} in Bambu Studio`;
+      o.textContent = '▶';
+      o.onclick = () => openInBambu(name);
+      swatch_btns.appendChild(o);
+    }
   }
   dl_conn.style.display = data.has_connectors ? 'inline-flex' : 'none';
+  open_conn.style.display = data.has_connectors && bambu.found ? 'inline-flex' : 'none';
   sched.innerHTML = data.schedule.map((row, idx) => {
     const badges = row.slots.map(s =>
       `<span class="slot-chip" title="${escapeHtml(s.name)}: ${s.grams} g"><i style="background:${s.hex}"></i>T${s.slot} ${escapeHtml(s.name)}</span>`
@@ -366,7 +379,10 @@ async function runInspect() {
     const lossTitle = row.dropped && row.dropped.length ? `Colors dropped from this tile: ${row.dropped.join(', ')}` : 'No colors lost';
     return `<tr data-tile="${row.name}"><td>${idx + 1}</td><td><strong>${row.name}</strong></td><td>${sw}</td>` +
            `<td class="${lossCls}" title="${escapeHtml(lossTitle)}">${loss ? loss + '%' : '—'}</td><td>${badges}</td>` +
-           `<td><button type="button" class="btn-table" onclick="event.stopPropagation();downloadFile('${fname}')">⬇ ${fname}</button></td></tr>`;
+           `<td class="export-cell"><button type="button" class="btn-table" onclick="event.stopPropagation();downloadFile('${fname}')">⬇ ${fname}</button>` +
+           (bambu.found ? `<button type="button" class="btn-table btn-bambu" title="Open ${fname} in Bambu Studio" ` +
+                          `onclick="event.stopPropagation();openInBambu('${fname}')">▶ Bambu Studio</button>` : '') +
+           `</td></tr>`;
   }).join('');
   sched.querySelectorAll('tr[data-tile]').forEach(tr => {
     tr.onclick = () => selectTile(tr.dataset.tile);
@@ -419,6 +435,35 @@ dl.onclick = async () => {
 };
 
 dl_conn.onclick = () => downloadFile('connectors.3mf');
+open_conn.onclick = () => openInBambu('connectors.3mf');
+
+// --- Bambu Studio ---
+async function checkBambu() {
+  const v = bambu_path.value.trim();
+  try {
+    bambu = await (await fetch('/api/bambu' + (v ? '?path=' + encodeURIComponent(v) : ''))).json();
+  } catch (e) {
+    bambu = { found: false, label: '' };
+  }
+  bambu_status.textContent = bambu.found ? `Using ${bambu.label}`
+    : v ? 'Bambu Studio was not found at that location.'
+        : 'Bambu Studio was not found. Enter its location to open tiles directly.';
+}
+
+async function openInBambu(filename) {
+  if (!activeFile) return;
+  let q;
+  try { q = buildQuery(); } catch (e) { err.textContent = e.message; return; }
+  q.set('file', filename);
+  if (bambu_path.value.trim()) q.set('bambu_path', bambu_path.value.trim());
+  status_txt.textContent = `Opening ${filename} in Bambu Studio...`;
+  const r = await fetch('/api/open_in_bambu?' + q.toString(), { method: 'POST', body: activeFile });
+  if (!r.ok) { status_txt.textContent = ''; err.textContent = await r.text(); return; }
+  err.textContent = '';
+  status_txt.textContent = `Opened ${filename} in Bambu Studio`;
+}
+
+bambu_path.addEventListener('change', async () => { await checkBambu(); scheduleInspect(); });
 
 // --- Custom Image Tool ---
 const edCtx = ed_canvas.getContext('2d', { willReadFrequently: true });

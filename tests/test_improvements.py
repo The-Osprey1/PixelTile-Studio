@@ -4,8 +4,10 @@ import json
 import math
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -344,3 +346,93 @@ def test_quantize_unique_color_shortcut_matches_direct(seed):
     pal_lab = rgb_to_lab(pal_rgb)
     direct = ((rgb_to_lab(rgb).reshape(-1, 1, 3) - pal_lab[None]) ** 2).sum(-1).argmin(1).reshape(50, 70)
     assert (quantize(rgb, pal_rgb) == direct).all()
+
+
+# --- Files open in Bambu Studio without replacing presets or losing slots -------------------
+
+def _bambu_view(data: bytes):
+    """Read a 3MF the way Bambu Studio 2.9 does for files from other programs.
+
+    Returns (looks_like_bambu_file, has_project_settings, any_colored_triangles, {part name: slot})."""
+    z = zipfile.ZipFile(io.BytesIO(data))
+    model = z.read("3D/3dmodel.model").decode()
+    app = re.search(r'<metadata name="Application">([^<]*)</metadata>', model)
+    is_bambu = bool(app and app.group(1).startswith("BambuStudio-"))
+    has_project = "Metadata/project_settings.config" in z.namelist()
+    colored = bool(re.search(r'<object[^>]* pid="', model) or re.search(r'<triangle[^>]* pid="', model))
+    # Part metadata is matched to the component's object id (bbs_3mf.cpp, _generate_volumes_new).
+    names = dict(re.findall(r'<object id="(\d+)" name="([^"]*)" type="model"><mesh>', model))
+    comps = re.findall(r'<component objectid="(\d+)"/>', model)
+    settings = z.read("Metadata/model_settings.config").decode()
+    parts = re.findall(r'<part id="(\d+)" subtype="normal_part">.*?key="extruder" value="(\d+)"', settings)
+    slots = {pid: int(ext) for pid, ext in parts}
+    assert set(comps) == set(slots) == set(names), "every component needs its own part entry"
+    return is_bambu, has_project, colored, {names[c]: slots[c] for c in comps}
+
+
+def test_tiles_keep_presets_and_slots_in_bambu_studio():
+    r = run(sample_artwork_png("starry"), Settings(width_mm=400, wall_mount=True))
+    files = list(r.tiles.values()) + list(r.swatches.values()) + [r.connectors_3mf]
+    for data in files:
+        is_bambu, has_project, colored, _ = _bambu_view(data)
+        assert not is_bambu, "must not claim to be a Bambu Studio file"
+        assert not has_project, "project settings would replace the user's presets"
+        assert not colored, "colors would make Bambu Studio erase the part slots"
+    for row in r.schedule:
+        _, _, _, slots = _bambu_view(r.tiles[row["name"] + ".3mf"])
+        assert slots == {sl["name"]: sl["slot"] for sl in row["slots"]}
+    assert "0.2 mm layer height" in r.readme
+
+
+# --- Open in Bambu Studio -------------------------------------------------------------------
+
+def test_find_bambu_studio_from_configured_path(tmp_path, monkeypatch):
+    from pixeltile import bambu_studio as bs
+    monkeypatch.delenv("PIXELTILE_BAMBU_STUDIO", raising=False)
+    monkeypatch.setattr(bs.sys, "platform", "linux")
+    monkeypatch.setattr(bs.shutil, "which", lambda name: None)  # nothing installed system-wide
+    exe = tmp_path / "bambu-studio"
+    exe.write_text("")
+    assert bs.find_bambu_studio(str(exe)).command == [str(exe)]
+    app = tmp_path / "BambuStudio.app"
+    app.mkdir()
+    assert bs.find_bambu_studio(str(app)).command == ["open", "-a", str(app)]
+    other = tmp_path / "notepad.exe"  # never launch something that isn't Bambu Studio
+    other.write_text("")
+    assert bs.find_bambu_studio(str(other)) is None
+    assert bs.find_bambu_studio(str(tmp_path / "missing" / "bambu-studio")) is None
+
+
+def test_bambu_registry_command_parsing():
+    from pixeltile.bambu_studio import _exe_from_command
+    assert _exe_from_command('"C:\\Program Files\\Bambu Studio\\bambu-studio.exe" "%1"') == \
+        "C:\\Program Files\\Bambu Studio\\bambu-studio.exe"
+    assert _exe_from_command("C:\\Bambu\\bambu-studio.exe %1") == "C:\\Bambu\\bambu-studio.exe"
+    assert _exe_from_command('""') is None
+
+
+def test_server_opens_tile_in_bambu_studio(server, tmp_path, monkeypatch):
+    import pixeltile.webapp as webapp
+    exe = tmp_path / "bambu-studio"
+    exe.write_text("")
+    launched = []
+    monkeypatch.setattr(webapp, "open_in_bambu_studio", lambda launcher, files: launched.append((launcher, files)))
+    q = urllib.parse.quote(str(exe))
+    status = json.loads(_req(f"{server}/api/bambu?path={q}")[1])
+    assert status == {"found": True, "label": str(exe)}
+    img = sample_artwork_png("grid")
+    code, body, _ = _req(f"{server}/api/open_in_bambu?file=A1.3mf&bambu_path={q}", img, method="POST")
+    assert code == 200, body
+    data = json.loads(body)
+    (launcher, files), = launched
+    assert launcher.command == [str(exe)] and files == [Path(data["file"])]
+    assert Path(data["file"]).parent == tmp_path / "Open in Bambu Studio"
+    assert Path(data["file"]).read_bytes()[:2] == b"PK"
+
+
+def test_server_reports_missing_bambu_studio(server, monkeypatch):
+    import pixeltile.webapp as webapp
+    monkeypatch.setattr(webapp, "find_bambu_studio", lambda configured=None: None)
+    assert json.loads(_req(server + "/api/bambu")[1]) == {"found": False, "label": ""}
+    code, body, _ = _req(server + "/api/open_in_bambu?file=A1.3mf", sample_artwork_png("grid"), method="POST")
+    assert code == 404 and b"not found" in body

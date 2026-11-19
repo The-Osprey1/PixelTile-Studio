@@ -147,6 +147,10 @@
             <label class="field-label">Backing (mm)<input type="number" id="backing_mm" value="1.6" step="0.2" min="0.4"></label>
             <label class="field-label">Contrast<input type="number" id="contrast" value="1" step="0.1"></label>
             <label class="field-label">Saturation<input type="number" id="saturation" value="1" step="0.1"></label>
+            <label class="field-label span2">Bambu Studio location (optional)
+              <input type="text" id="bambu_path" placeholder="Found automatically" spellcheck="false">
+              <span id="bambu_status" class="field-hint"></span>
+            </label>
           </div>
           <input type="checkbox" id="connector_keys" style="display:none">
           <input type="checkbox" id="wall_mount" style="display:none">
@@ -192,6 +196,7 @@
         <div class="dock-actions">
           <span id="swatch_btns" style="display:contents"></span>
           <button type="button" class="btn-table" id="dl_conn" style="display:none">⬇ Connectors .3mf</button>
+          <button type="button" class="btn-table btn-bambu" id="open_conn" style="display:none" title="Open connectors.3mf in Bambu Studio">▶</button>
         </div>
       </div>
       <div id="warn_box" aria-live="polite"></div>

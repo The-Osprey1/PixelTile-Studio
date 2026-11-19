@@ -1,9 +1,19 @@
-"""Bambu Studio / OrcaSlicer .3mf writer (one object, one part per filament).
+"""Bambu Studio .3mf writer (one object, one part per filament slot).
 
-Layout follows the public Bambu 3MF conventions (core model + Metadata/*.config),
+Layout follows the public Bambu 3MF conventions (core model + Metadata/model_settings.config),
 re-implemented from scratch. Each merged box is written as its own 8 vertices /
 12 triangles with NO vertex sharing across boxes, so every box is a closed
 manifold shell and no T-junctions can occur.
+
+How Bambu Studio (2.9) reads these files, and why they are written this way:
+- Each part's filament slot is stored as "extruder" metadata in model_settings.config.
+  Bambu Studio applies part metadata from any 3MF, so the slots survive.
+- No Metadata/project_settings.config: for 3MF files from other programs, Bambu Studio
+  turns that file into new printer / process / filament presets built from its generic
+  defaults and selects them, replacing the user's own presets.
+- No per-object colors (basematerials pid/pindex): for files from other programs, any
+  colored triangle makes Bambu Studio erase every part's slot and run its color import
+  dialog instead. Slot colors therefore come from the user's filaments or AMS sync.
 """
 from __future__ import annotations
 
@@ -46,54 +56,38 @@ def _mesh(boxes) -> str:
     return f'<mesh><vertices>{"".join(verts)}</vertices><triangles>{"".join(tris)}</triangles></mesh>'
 
 
-def write_3mf(parts: list[Part], object_name: str, slot_colors: list[str],
-              layer_height: float = 0.2, nozzle: float = 0.4, slot_types: list[str] | None = None) -> bytes:
-    """`slot_colors` lists ALL filament slots (1..N, e.g. 8); unused ones are still written."""
+def write_3mf(parts: list[Part], object_name: str, n_slots: int) -> bytes:
+    """Write one multi-part object; each part prints with its 1-based filament slot (1..n_slots)."""
     parts = [p for p in parts if p.boxes]
     if not parts:
         raise ValueError("No geometry to export")
-    n_slots = len(slot_colors)
     for p in parts:
         if not 1 <= p.extruder <= n_slots:
             raise ValueError(f"{p.name}: extruder {p.extruder} outside 1..{n_slots}")
-    types = slot_types or ["PLA"] * n_slots
 
-    base = "".join(f'<base name={quoteattr("Filament %d" % (i + 1))} displaycolor="{c.upper()}FF"/>'
-                   for i, c in enumerate(h.lstrip("#") for h in slot_colors))
     objs = "".join(
-        f'<object id="{i + 2}" name={quoteattr(p.name)} type="model" pid="1" pindex="{p.extruder - 1}">{_mesh(p.boxes)}</object>'
+        f'<object id="{i + 1}" name={quoteattr(p.name)} type="model">{_mesh(p.boxes)}</object>'
         for i, p in enumerate(parts))
-    asm = len(parts) + 2
-    comps = "".join(f'<component objectid="{i + 2}"/>' for i in range(len(parts)))
+    asm = len(parts) + 1
+    comps = "".join(f'<component objectid="{i + 1}"/>' for i in range(len(parts)))
     model = ('<?xml version="1.0" encoding="UTF-8"?>\n'
-             '<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" '
-             'xmlns:BambuStudio="http://schemas.bambulab.com/package/2021">'
-             '<metadata name="Application">PixelTile</metadata><metadata name="BambuStudio:3mfVersion">1</metadata>'
-             f'<resources><basematerials id="1">{base}</basematerials>{objs}'
+             '<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">'
+             '<metadata name="Application">PixelTile</metadata>'
+             f'<resources>{objs}'
              f'<object id="{asm}" name={quoteattr(object_name)} type="model"><components>{comps}</components></object>'
              f'</resources><build><item objectid="{asm}"/></build></model>')
 
     settings_parts = "".join(
-        f'<part id="{i + 2}" subtype="normal_part"><metadata key="name" value={quoteattr(p.name)}/>'
+        f'<part id="{i + 1}" subtype="normal_part"><metadata key="name" value={quoteattr(p.name)}/>'
         f'<metadata key="extruder" value="{p.extruder}"/></part>' for i, p in enumerate(parts))
     model_settings = ('<?xml version="1.0" encoding="UTF-8"?>\n<config>'
                       f'<object id="{asm}"><metadata key="name" value={quoteattr(object_name)}/>'
                       f'<metadata key="extruder" value="1"/>{settings_parts}</object></config>')
-
-    import json
-    project = json.dumps({
-        "filament_colour": [c.upper() if c.startswith("#") else "#" + c.upper() for c in slot_colors],
-        "filament_type": types,
-        "nozzle_diameter": [_num(nozzle)],
-        "layer_height": _num(layer_height),
-        "initial_layer_print_height": _num(layer_height),
-    }, indent=4) + "\n"
 
     buf = BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("[Content_Types].xml", CONTENT_TYPES)
         z.writestr("_rels/.rels", RELS)
         z.writestr("3D/3dmodel.model", model)
-        z.writestr("Metadata/project_settings.config", project)
         z.writestr("Metadata/model_settings.config", model_settings)
     return buf.getvalue()
