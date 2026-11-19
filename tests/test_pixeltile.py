@@ -196,8 +196,8 @@ def test_connector_keys_manifold_and_connectors_3mf():
 
 def test_swatch_3mf_generated():
     r = run(sample_png(40, 40), Settings(width_mm=60, auto_colors=6))
-    assert r.swatch_3mf
-    _assert_manifold_3mf(r.swatch_3mf)
+    assert r.swatch_names == ["swatch.3mf"]
+    _assert_manifold_3mf(r.swatches["swatch.3mf"])
     with zipfile.ZipFile(io.BytesIO(r.zip_bytes())) as z:
         assert "swatch.3mf" in z.namelist()
         assert z.testzip() is None

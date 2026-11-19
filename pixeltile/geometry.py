@@ -8,6 +8,14 @@ import numpy as np
 
 Box = tuple[float, float, float, float, float, float]  # x0,y0,z0,x1,y1,z1 (mm)
 
+# Hardware dimensions (mm).
+WALL_DEPTH_MM = 7.7            # total depth of a wall-mount tile, face to wall
+RIM_WIDTH_MM = 12.0            # wall-mount perimeter rim width
+MIN_HARDWARE_TILE_MM = 40.0    # smaller tiles get no rim / connector pockets
+MIN_POCKET_BACKING_MM = 1.0    # flat backs thinner than this get no connector pockets
+KEY_W_MM, KEY_H_MM = 11.6, 15.6  # connector key footprint (spans two pockets across a seam)
+POCKET_DEPTH_MM, POCKET_LEN_MM = 6.0, 16.0  # minimum pocket size on each side of a seam
+
 
 @dataclass
 class Part:
@@ -16,25 +24,45 @@ class Part:
     extruder: int      # 1-based filament slot
     boxes: list[Box]
 
+    @property
+    def volume_mm3(self) -> float:
+        return float(sum((x1 - x0) * (y1 - y0) * (z1 - z0) for x0, y0, z0, x1, y1, z1 in self.boxes))
+
+
+def rim_fits(tile_w_mm: float, tile_h_mm: float, z_base: float) -> bool:
+    """True when a wall-mount rim (and its keyholes / seam pockets) can be built on this tile."""
+    return (WALL_DEPTH_MM > z_base + 0.4
+            and tile_w_mm >= MIN_HARDWARE_TILE_MM and tile_h_mm >= MIN_HARDWARE_TILE_MM)
+
+
+def flat_pockets_fit(tile_w_mm: float, tile_h_mm: float, backing_mm: float) -> bool:
+    """True when connector pockets can be cut into a flat backing plate."""
+    return (backing_mm >= MIN_POCKET_BACKING_MM
+            and tile_w_mm >= MIN_HARDWARE_TILE_MM and tile_h_mm >= MIN_HARDWARE_TILE_MM)
+
+
+def _row_runs(mask: np.ndarray) -> list[set[tuple[int, int]]]:
+    """Per row, the set of (start, end) column runs of True cells (end-exclusive)."""
+    rows, cols = mask.shape
+    padded = np.zeros((rows, cols + 2), dtype=np.int8)
+    padded[:, 1:-1] = mask
+    d = np.diff(padded, axis=1)
+    sr, sc = np.nonzero(d == 1)   # row-major order, so starts and ends pair up
+    _, ec = np.nonzero(d == -1)
+    runs: list[set[tuple[int, int]]] = [set() for _ in range(rows)]
+    for r, s, e in zip(sr.tolist(), sc.tolist(), ec.tolist()):
+        runs[r].add((s, e))
+    return runs
+
 
 def merge_rects(mask: np.ndarray) -> list[tuple[int, int, int, int]]:
     """Greedy cover of a boolean mask by disjoint rectangles (r0, c0, r1, c1), end-exclusive."""
+    mask = np.asarray(mask, dtype=bool)
     rects: list[tuple[int, int, int, int]] = []
     active: dict[tuple[int, int], int] = {}  # (c0, c1) -> start row
+    row_runs = _row_runs(mask)
     for r in range(mask.shape[0] + 1):
-        runs: set[tuple[int, int]] = set()
-        if r < mask.shape[0]:
-            row = mask[r]
-            c = 0
-            n = len(row)
-            while c < n:
-                if row[c]:
-                    s = c
-                    while c < n and row[c]:
-                        c += 1
-                    runs.add((s, c))
-                else:
-                    c += 1
+        runs = row_runs[r] if r < mask.shape[0] else set()
         for key in list(active):
             if key not in runs:
                 rects.append((active.pop(key), key[0], r, key[1]))
@@ -57,11 +85,17 @@ def _rects_to_boxes(rects: list[tuple[int, int, int, int]], rows: int, cols: int
 
 def _cut_edge_pockets(mask: np.ndarray, pixel_mm: float,
                       shared_edges: tuple[bool, bool, bool, bool]) -> None:
-    """Subtract centered >=16 x 6 mm connector pockets along each shared interior edge."""
+    """Subtract centered >=16 x 6 mm connector pockets along each shared interior edge.
+
+    Sizes are rounded UP to whole pixels so a connector key always fits across the seam."""
     rows, cols = mask.shape
-    len_r = min(rows - 2, max(2, math.ceil(16.0 / pixel_mm)))
-    len_c = min(cols - 2, max(2, math.ceil(16.0 / pixel_mm)))
-    depth = max(1, round(6.0 / pixel_mm))
+
+    def cells(mm: float) -> int:
+        return max(1, math.ceil(mm / pixel_mm - 1e-9))
+
+    len_r = min(rows - 2, max(2, cells(POCKET_LEN_MM)))
+    len_c = min(cols - 2, max(2, cells(POCKET_LEN_MM)))
+    depth = cells(POCKET_DEPTH_MM)
 
     top, bottom, left, right = shared_edges
     if top:
@@ -82,7 +116,7 @@ def _backing_boxes(rows: int, cols: int, pixel_mm: float, color_depth: float, ba
                    shared_edges: tuple[bool, bool, bool, bool]) -> list[Box]:
     w, h = cols * pixel_mm, rows * pixel_mm
     z0, z1 = color_depth, color_depth + backing_mm
-    if not (any(shared_edges) and w >= 40.0 and h >= 40.0 and backing_mm >= 1.0):
+    if not (any(shared_edges) and flat_pockets_fit(w, h, backing_mm)):
         return [(0.0, 0.0, z0, w, h, z1)]
 
     z_mid = color_depth + backing_mm * 0.5
@@ -99,15 +133,15 @@ def _wall_mount_rim_boxes(
     cols: int,
     pixel_mm: float,
     z_base: float,
-    total_depth_mm: float = 7.7,
-    rim_width_mm: float = 12.0,
+    total_depth_mm: float = WALL_DEPTH_MM,
+    rim_width_mm: float = RIM_WIDTH_MM,
     shared_edges: tuple[bool, bool, bool, bool] = (False, False, False, False),
     is_top_row: bool = False,
     is_bottom_row: bool = False,
     has_keyhole: bool = False,
 ) -> list[Box]:
     """Build a 12 mm perimeter back rim up to 7.7 mm with optional keyholes and seam pockets."""
-    if total_depth_mm <= z_base + 0.4 or cols * pixel_mm < 40.0 or rows * pixel_mm < 40.0:
+    if total_depth_mm <= z_base + 0.4 or not rim_fits(cols * pixel_mm, rows * pixel_mm, z_base):
         return []
 
     rim_c = max(1, min(rows // 3, cols // 3, round(rim_width_mm / pixel_mm)))
@@ -203,7 +237,7 @@ def connector_key_parts(n_keys: int, backing: tuple[str, str], thickness_mm: flo
     """Generate rectangular connector keys (11.6 x 15.6 mm) laid out on the build plate."""
     if n_keys <= 0:
         return []
-    key_w, key_h, gap = 11.6, 15.6, 4.0
+    key_w, key_h, gap = KEY_W_MM, KEY_H_MM, 4.0
     cols = max(1, math.ceil(math.sqrt(n_keys)))
     boxes: list[Box] = []
     for k in range(n_keys):
