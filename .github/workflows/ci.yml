@@ -8,11 +8,43 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    name: Tests (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e ".[test]"
+      - run: python -m pytest -v
+      - name: Check the studio script parses
+        if: runner.os == 'Linux'
+        run: node --check pixeltile/static/app.js
+
+  windows-app:
+    name: Build Windows app
+    needs: test
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install pillow numpy pytest
-      - run: python -m pytest -v
+      - run: pip install -r requirements.txt
+      - run: python -m PyInstaller --noconfirm --clean pixeltile.spec
+      - name: Check the bundle contains the app and the studio files
+        shell: pwsh
+        run: |
+          if (-not (Test-Path dist/PixelTileStudio/PixelTileStudio.exe)) { throw "PixelTileStudio.exe was not built" }
+          $page = Get-ChildItem -Recurse dist/PixelTileStudio -Filter index.html |
+            Where-Object { $_.DirectoryName -like "*pixeltile*static" }
+          if (-not $page) { throw "studio files (pixeltile/static) are missing from the bundle" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PixelTileStudio-windows
+          path: dist/PixelTileStudio
